@@ -86,3 +86,14 @@ def process_and_validate_data(raw_data: Dict[str, Any], schema: Dict[str, Any], 
         raise ValueError("Data does not match the expected schema")
     transformed_data = transform_data(processed_data, transformations)
     return transformed_data
+
+
+def clean_data(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {k: clean_data(v) for k, v in data.items() if v is not None}
+    elif isinstance(data, list):
+        return [clean_data(item) for item in data if item is not None]
+    elif isinstance(data, str):
+        return data.strip()
+    else:
+        return data

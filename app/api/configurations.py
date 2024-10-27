@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, HttpUrl, Field, validator
 from typing import Dict, Any, List, Optional
 from app.db.database import (
     create_crawl_configuration,
@@ -7,10 +7,60 @@ from app.db.database import (
     supabase,
 )
 from app.api.auth import get_current_user
-from app.services.scraping_service import validate_url, scrape_url
+from app.utils.validation import validate_url
+from app.services.scraping_service import scrape_url
+from app.models.scraping import CrawlerType, WaitCondition, ScrapingConfiguration
 import time
+from enum import Enum
 
 router = APIRouter()
+
+
+class CrawlerType(str, Enum):
+    BASIC = "basic"
+    LLM_EXTRACTION = "llm_extraction"
+    JS_CSS_EXTRACTION = "js_css_extraction"
+
+class WaitCondition(BaseModel):
+    selector: str = Field(..., description="CSS selector to wait for")
+    timeout: int = Field(default=30, ge=1, le=300, description="Maximum time to wait in seconds")
+
+class ScrapingConfiguration(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="Name of the scraping configuration")
+    description: Optional[str] = Field(None, max_length=500, description="Description of the scraping configuration")
+    url: HttpUrl = Field(..., description="URL of the website to scrape")
+    crawler_type: CrawlerType = Field(default=CrawlerType.BASIC, description="Type of crawler to use")
+    extraction_instructions: Optional[str] = Field(None, max_length=1000, description="Instructions for LLM-based extraction")
+    css_selectors: Optional[List[str]] = Field(None, description="List of CSS selectors for JS/CSS-based extraction")
+    javascript_code: Optional[str] = Field(None, max_length=5000, description="JavaScript code for dynamic content loading")
+    wait_conditions: Optional[List[WaitCondition]] = Field(None, description="List of wait conditions for ensuring content is loaded")
+
+    @validator('extraction_instructions')
+    def validate_extraction_instructions(cls, v, values):
+        if values.get('crawler_type') == CrawlerType.LLM_EXTRACTION and not v:
+            raise ValueError("Extraction instructions are required for LLM extraction")
+        return v
+
+    @validator('css_selectors')
+    def validate_css_selectors(cls, v, values):
+        if values.get('crawler_type') == CrawlerType.JS_CSS_EXTRACTION and not v:
+            raise ValueError("CSS selectors are required for JS/CSS extraction")
+        return v
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "name": "Example Scraper",
+                "description": "Scrapes product information from an e-commerce site",
+                "url": "https://example.com/products",
+                "crawler_type": "js_css_extraction",
+                "css_selectors": [".product-title", ".product-price"],
+                "javascript_code": "window.scrollTo(0, document.body.scrollHeight);",
+                "wait_conditions": [
+                    {"selector": ".product-grid", "timeout": 60}
+                ]
+            }
+        }
 
 class CrawlConfigurationCreate(BaseModel):
     name: str
@@ -72,7 +122,7 @@ async def update_configuration(
         if not existing_config.data:
             raise HTTPException(status_code=404, detail="Configuration not found")
         
-        update_data = config_update.dict(exclude_unset=True)
+        update_data = config_update.model_dump(exclude_unset=True)
         if "url" in update_data and not validate_url(str(update_data["url"])):
             raise HTTPException(status_code=400, detail="Invalid URL")
         
